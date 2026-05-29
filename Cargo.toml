@@ -2,5 +2,23 @@
 name = "senbay-rs"
 version = "0.1.0"
 edition = "2024"
+description = "Encode and decode the Senbay format."
 
 [dependencies]
+serde_json = "1.0"
+
+# Optional dependencies, only required for the video reader/writer.
+opencv = { version = "0.94", optional = true }
+qrcode = { version = "0.14", optional = true }
+quircs = { version = "0.10", optional = true }
+
+[features]
+default = []
+# Enables the QR/OpenCV based Reader and Writer. Requires a system OpenCV install.
+video = ["dep:opencv", "dep:qrcode", "dep:quircs"]
+
+# Sample app: read a Senbay video and print decoded records as JSON (headless).
+[[example]]
+name = "read_webm"
+required-features = ["video"]
+
