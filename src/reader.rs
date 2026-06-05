@@ -209,7 +209,9 @@ impl Scanner {
         if fw == 0 || fh == 0 {
             return Ok(None);
         }
-        imgproc::cvt_color(frame, &mut self.gray, imgproc::COLOR_BGR2GRAY, 0)?;
+        // `_def` keeps the call portable: OpenCV 4.11+ added a trailing
+        // `AlgorithmHint` arg to `cvt_color`; the def variant uses the defaults.
+        imgproc::cvt_color_def(frame, &mut self.gray, imgproc::COLOR_BGR2GRAY)?;
 
         // Fast path: re-scan only the padded region around the last sighting.
         if let Some(rect) = self.roi {
@@ -443,7 +445,7 @@ mod tests {
         let mut quirc = Quirc::default();
         let frame = qr_frame(SAMPLE);
         let mut gray = Mat::default();
-        opencv::imgproc::cvt_color(&frame, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0).unwrap();
+        opencv::imgproc::cvt_color_def(&frame, &mut gray, opencv::imgproc::COLOR_BGR2GRAY).unwrap();
         let (text, _) = scan_mat(&mut quirc, &gray).expect("should decode");
         assert_eq!(text, SAMPLE);
     }
