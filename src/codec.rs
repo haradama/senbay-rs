@@ -256,4 +256,31 @@ mod tests {
         // BTreeMap ordering makes this deterministic.
         assert_eq!(json, r#"{"LATI":35.6895,"MEMO":"hi"}"#);
     }
+
+    #[test]
+    fn with_radix_validates_and_exposes_radix() {
+        let codec = Senbay::with_radix(64).unwrap();
+        assert_eq!(codec.radix().get(), 64);
+        assert_eq!(Senbay::new().radix(), Radix::default());
+        assert!(Senbay::with_radix(1).is_err());
+    }
+
+    #[test]
+    fn decode_skips_malformed_and_unparsable_fields() {
+        let codec = Senbay::new();
+        // "MEMO" has no colon (skipped); "FOO:bar" is non-numeric, non-quoted text.
+        let decoded = codec.decode("V:3,MEMO,FOO:bar,EMPTY:,NONE:None");
+        assert!(decoded.get("MEMO").is_none());
+        assert_eq!(decoded.get("FOO").unwrap().as_str(), Some("bar"));
+        assert!(decoded.get("EMPTY").is_none());
+        assert!(decoded.get("NONE").is_none());
+    }
+
+    #[test]
+    fn expand_skips_empty_glued_field() {
+        let codec = Senbay::new();
+        // A bare reserved key "0" with no value expands to nothing.
+        let decoded = codec.decode("V:4,0");
+        assert!(decoded.get("TIME").is_none());
+    }
 }

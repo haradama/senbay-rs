@@ -49,3 +49,24 @@ impl From<opencv::Error> for Error {
         Error::Opencv(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+
+    #[test]
+    fn invalid_radix_displays_and_has_no_source() {
+        let err = Error::InvalidRadix { value: 200, max: 122 };
+        assert_eq!(err.to_string(), "radix must be in 2..=122, got 200");
+        assert!(err.source().is_none());
+    }
+
+    #[cfg(feature = "video")]
+    #[test]
+    fn opencv_error_converts_displays_and_exposes_source() {
+        let err: Error = opencv::Error::new(1, "boom").into();
+        assert!(err.to_string().starts_with("opencv error:"));
+        assert!(err.source().is_some());
+    }
+}

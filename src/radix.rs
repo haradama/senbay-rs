@@ -153,11 +153,8 @@ impl Radix {
                 let int_val = self.decode_int(int_str);
 
                 // Strip the leading zero digits the encoder inserted.
-                let zero = self.encode_int(0);
-                let leading = match zero.chars().next() {
-                    Some(z) => frac_str.chars().take_while(|&c| c == z).count(),
-                    None => 0,
-                };
+                let zero_digit = self.encode_int(0).chars().next().unwrap_or('\0');
+                let leading = frac_str.chars().take_while(|&c| c == zero_digit).count();
                 let frac_rest: String = frac_str.chars().skip(leading).collect();
                 let frac_val = self.decode_int(&frac_rest);
 
@@ -222,5 +219,20 @@ mod tests {
         let radix = Radix::DEFAULT;
         assert_eq!(radix.encode_float(f64::NAN), radix.encode_int(0));
         assert_eq!(radix.encode_float(f64::INFINITY), radix.encode_int(0));
+    }
+
+    #[test]
+    fn get_returns_value() {
+        assert_eq!(Radix::DEFAULT.get(), 121);
+        assert_eq!(Radix::new(2).unwrap().get(), 2);
+    }
+
+    #[test]
+    fn empty_body_decodes_to_zero() {
+        let radix = Radix::DEFAULT;
+        assert_eq!(radix.decode_int(""), 0);
+        assert_eq!(radix.decode_int("-"), 0);
+        assert_eq!(radix.decode_float(""), 0.0);
+        assert_eq!(radix.decode_float("-"), 0.0);
     }
 }

@@ -96,3 +96,55 @@ impl From<String> for Value {
         Value::Text(v)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_text_distinguishes_variants() {
+        assert!(Value::Text("hi".into()).is_text());
+        assert!(!Value::Int(1).is_text());
+        assert!(!Value::Float(1.0).is_text());
+    }
+
+    #[test]
+    fn as_f64_covers_all_variants() {
+        assert_eq!(Value::Int(42).as_f64(), Some(42.0));
+        assert_eq!(Value::Float(1.5).as_f64(), Some(1.5));
+        assert_eq!(Value::Text("x".into()).as_f64(), None);
+    }
+
+    #[test]
+    fn as_str_covers_all_variants() {
+        assert_eq!(Value::Text("hi".into()).as_str(), Some("hi"));
+        assert_eq!(Value::Int(1).as_str(), None);
+        assert_eq!(Value::Float(1.0).as_str(), None);
+    }
+
+    #[test]
+    fn to_json_covers_all_variants() {
+        assert_eq!(Value::Int(7).to_json(), serde_json::json!(7));
+        assert_eq!(Value::Float(1.5).to_json(), serde_json::json!(1.5));
+        assert_eq!(Value::Text("hi".into()).to_json(), serde_json::json!("hi"));
+        // Non-finite floats are not representable in JSON and become null.
+        assert_eq!(Value::Float(f64::NAN).to_json(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn display_formats_numbers_bare_and_text_quoted() {
+        assert_eq!(Value::Int(42).to_string(), "42");
+        assert_eq!(Value::Float(1.5).to_string(), "1.5");
+        assert_eq!(Value::Text("hi".into()).to_string(), "'hi'");
+    }
+
+    #[test]
+    fn from_conversions() {
+        assert_eq!(Value::from(1_i8), Value::Int(1));
+        assert_eq!(Value::from(1_u32), Value::Int(1));
+        assert_eq!(Value::from(1.5_f32), Value::Float(1.5));
+        assert_eq!(Value::from(1.5_f64), Value::Float(1.5));
+        assert_eq!(Value::from("hi"), Value::Text("hi".into()));
+        assert_eq!(Value::from(String::from("hi")), Value::Text("hi".into()));
+    }
+}

@@ -120,3 +120,45 @@ impl<'a> Iterator for Iter<'a> {
         self.inner.next().map(|(k, v)| (k.as_str(), v))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_returns_value_when_present() {
+        let mut record = Record::new();
+        record.set("A", 1_i64);
+        assert_eq!(record.remove("A"), Some(Value::Int(1)));
+        assert_eq!(record.remove("A"), None);
+    }
+
+    #[test]
+    fn clear_and_len_and_is_empty() {
+        let mut record = Record::new();
+        assert!(record.is_empty());
+        assert_eq!(record.len(), 0);
+        record.set("A", 1_i64).set("B", 2_i64);
+        assert_eq!(record.len(), 2);
+        assert!(!record.is_empty());
+        record.clear();
+        assert_eq!(record.len(), 0);
+        assert!(record.is_empty());
+    }
+
+    #[test]
+    fn into_iter_yields_fields_in_key_order() {
+        let mut record = Record::new();
+        record.set("B", 2_i64).set("A", 1_i64);
+        let collected: Vec<_> = (&record).into_iter().collect();
+        assert_eq!(collected, vec![("A", &Value::Int(1)), ("B", &Value::Int(2))]);
+    }
+
+    #[test]
+    fn from_iter_builds_record() {
+        let record: Record = [("A", 1_i64), ("B", 2_i64)].into_iter().collect();
+        assert_eq!(record.get("A"), Some(&Value::Int(1)));
+        assert_eq!(record.get("B"), Some(&Value::Int(2)));
+        assert_eq!(record.len(), 2);
+    }
+}

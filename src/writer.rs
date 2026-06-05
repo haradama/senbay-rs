@@ -1,16 +1,41 @@
 //! QR/OpenCV video writer (requires the `video` feature).
+//!
+//! As with the reader, all logic is testable in isolation: the camera, the
+//! video sink, and the preview window are abstracted behind [`Camera`],
+//! [`VideoSink`], and [`Preview`]. The real OpenCV implementations and the
+//! public entry points that wire them live in `video_backend.rs`, which is
+//! excluded from coverage because it only drives a camera/display.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use opencv::core::{Mat, MatTraitConst, Rect, Scalar, Size};
-use opencv::prelude::*;
-use opencv::{highgui, imgproc, videoio};
+use opencv::{imgproc, videoio};
 use qrcode::{Color, QrCode};
 
 use crate::codec::Senbay;
 use crate::error::Result;
+use crate::reader::Preview;
 use crate::record::{Encoding, Record};
 use crate::{KEY_CODE_ESC, Radix};
+
+/// A camera (frame source) for the writer. Implemented by the real OpenCV
+/// capture in `video_backend.rs` and by fakes in tests.
+pub(crate) trait Camera {
+    /// Returns whether the camera opened successfully.
+    fn is_opened(&self) -> Result<bool>;
+    /// Reads the next frame into `frame`, returning `false` on failure.
+    fn read(&mut self, frame: &mut Mat) -> Result<bool>;
+}
+
+/// A sink that records encoded frames (a video file). Implemented by the real
+/// OpenCV writer in `video_backend.rs` and by fakes in tests.
+pub(crate) trait VideoSink {
+    /// Prepares the sink for frames of the given size (known after the first
+    /// camera read).
+    fn open(&mut self, size: Size) -> Result<()>;
+    /// Writes one frame to the sink.
+    fn write(&mut self, frame: &Mat) -> Result<()>;
+}
 
 /// Captures camera frames and overlays a QR code carrying a Senbay record.
 ///
@@ -27,12 +52,12 @@ use crate::{KEY_CODE_ESC, Radix};
 /// # fn now_millis() -> i64 { 0 }
 /// ```
 pub struct Writer {
-    output: String,
-    camera: i32,
-    codec_fourcc: String,
-    fps: f64,
-    qr_size: i32,
-    senbay: Senbay,
+    pub(crate) output: String,
+    pub(crate) camera: i32,
+    pub(crate) codec_fourcc: String,
+    pub(crate) fps: f64,
+    pub(crate) qr_size: i32,
+    pub(crate) senbay: Senbay,
 }
 
 impl Writer {
@@ -79,65 +104,50 @@ impl Writer {
         self
     }
 
-    /// Captures frames until <kbd>Esc</kbd>, embedding the record produced by
-    /// `next_record` into each one.
-    pub fn run(&self, mut next_record: impl FnMut() -> Record) -> Result<()> {
-        const WINDOW: &str = "Senbay Writer";
-
-        highgui::named_window(WINDOW, highgui::WINDOW_AUTOSIZE)?;
-
-        let mut webcam = videoio::VideoCapture::new(self.camera, videoio::CAP_ANY)?;
-        if !webcam.is_opened()? {
+    /// Captures frames from `camera`, embeds the record produced by
+    /// `next_record` into each, writes them to `sink` (opened at the first
+    /// frame's size), and previews them until <kbd>Esc</kbd>.
+    pub(crate) fn run_core(
+        &self,
+        mut camera: Box<dyn Camera>,
+        mut sink: Box<dyn VideoSink>,
+        mut preview: Box<dyn Preview>,
+        mut next_record: impl FnMut() -> Record,
+    ) -> Result<()> {
+        if !camera.is_opened()? {
             return Err(opencv::Error::new(0, "cannot open camera").into());
         }
 
         let mut frame = Mat::default();
-        if !webcam.read(&mut frame)? {
+        if !camera.read(&mut frame)? {
             return Err(opencv::Error::new(0, "cannot read from camera").into());
         }
 
-        let fourcc = fourcc(&self.codec_fourcc)?;
-        let mut video = videoio::VideoWriter::new(
-            &self.output,
-            fourcc,
-            self.fps,
-            Size::new(frame.cols(), frame.rows()),
-            true,
-        )?;
+        sink.open(Size::new(frame.cols(), frame.rows()))?;
 
         loop {
             let text = self.senbay.encode(&next_record(), Encoding::Plain);
             let qr = render_qr(&text, self.qr_size, self.qr_size);
 
-            if !webcam.read(&mut frame)? || frame.empty() {
+            if !camera.read(&mut frame)? || frame.empty() {
                 continue;
             }
 
             overlay_qr(&mut frame, &qr)?;
-            video.write(&frame)?;
+            sink.write(&frame)?;
 
-            highgui::imshow(WINDOW, &frame)?;
-            if highgui::wait_key(1)? == KEY_CODE_ESC {
+            preview.show(&frame)?;
+            if preview.wait_key()? == KEY_CODE_ESC {
                 break;
             }
         }
 
         Ok(())
     }
-
-    /// Convenience for the common case: stamp each frame with the current
-    /// wall-clock time in milliseconds under the `TIME` key.
-    pub fn run_timestamps(&self) -> Result<()> {
-        self.run(|| {
-            let mut record = Record::new();
-            record.set("TIME", now_millis());
-            record
-        })
-    }
 }
 
 /// Current Unix time in milliseconds.
-fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -145,15 +155,10 @@ fn now_millis() -> i64 {
 }
 
 /// Builds an OpenCV FourCC code from a codec string, padding to four chars.
-fn fourcc(codec: &str) -> Result<i32> {
+pub(crate) fn fourcc(codec: &str) -> Result<i32> {
     let mut chars = codec.chars().chain(std::iter::repeat(' '));
     let mut next = || chars.next().unwrap();
-    Ok(videoio::VideoWriter::fourcc(
-        next(),
-        next(),
-        next(),
-        next(),
-    )?)
+    Ok(videoio::VideoWriter::fourcc(next(), next(), next(), next())?)
 }
 
 /// A rendered QR code: `dark[y * width + x]` is true for dark modules.
@@ -197,14 +202,9 @@ fn overlay_qr(img: &mut Mat, qr: &RenderedQr) -> Result<()> {
     for y in 0..qr.height.min(rows) {
         for x in 0..qr.width.min(cols) {
             let shade = if qr.dark[y * qr.width + x] { 0.0 } else { 255.0 };
-            imgproc::rectangle(
-                img,
-                Rect::new(x as i32, y as i32, 1, 1),
-                Scalar::new(shade, shade, shade, 0.0),
-                imgproc::FILLED,
-                imgproc::LINE_8,
-                0,
-            )?;
+            let pixel = Rect::new(x as i32, y as i32, 1, 1);
+            let color = Scalar::new(shade, shade, shade, 0.0);
+            imgproc::rectangle(img, pixel, color, imgproc::FILLED, imgproc::LINE_8, 0)?;
         }
     }
     Ok(())
@@ -213,6 +213,11 @@ fn overlay_qr(img: &mut Mat, qr: &RenderedQr) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use opencv::core::CV_8UC3;
 
     /// Exercises the full QR pipeline: encode a record (writer side) to a QR
     /// code, then read it back with quircs (reader side).
@@ -256,5 +261,176 @@ mod tests {
         let decoded = codec.decode(&content);
         assert_eq!(decoded.get("TIME").unwrap().as_f64(), Some(1_700_000_000_000.0));
         assert_eq!(decoded.get("LATI").unwrap().as_f64(), Some(35.6895));
+    }
+
+    #[test]
+    fn now_millis_is_positive() {
+        assert!(now_millis() > 0);
+    }
+
+    #[test]
+    fn fourcc_pads_short_codes() {
+        // Both a full and a short code produce a valid (non-zero) FourCC.
+        assert!(fourcc("MJPG").is_ok());
+        assert!(fourcc("X").is_ok());
+    }
+
+    #[test]
+    fn render_qr_floors_to_module_count() {
+        // A requested size below the module count is clamped up to it.
+        let qr = render_qr("hello", 1, 1);
+        assert!(qr.width >= 21 && qr.height >= 21);
+        assert!(qr.dark.iter().any(|&d| d)); // has dark modules
+        assert!(qr.dark.iter().any(|&d| !d)); // and light ones
+    }
+
+    #[test]
+    fn overlay_qr_paints_within_bounds() {
+        let qr = render_qr("hello", 8, 8);
+        let mut frame =
+            Mat::new_rows_cols_with_default(4, 4, CV_8UC3, Scalar::all(50.0)).unwrap();
+        // Frame is smaller than the QR; overlay must clamp to the frame.
+        overlay_qr(&mut frame, &qr).unwrap();
+    }
+
+    fn valid_frame() -> Mat {
+        Mat::new_rows_cols_with_default(4, 4, CV_8UC3, Scalar::all(255.0)).unwrap()
+    }
+
+    struct FakeCamera {
+        opened: bool,
+        frames: VecDeque<Option<Mat>>, // Some = real frame, None = empty frame
+    }
+
+    impl Camera for FakeCamera {
+        fn is_opened(&self) -> Result<bool> {
+            Ok(self.opened)
+        }
+
+        fn read(&mut self, frame: &mut Mat) -> Result<bool> {
+            match self.frames.pop_front() {
+                Some(Some(m)) => {
+                    *frame = m;
+                    Ok(true)
+                }
+                Some(None) => {
+                    *frame = Mat::default();
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+    }
+
+    struct FakeSink {
+        writes: Rc<RefCell<usize>>,
+        opened: Rc<RefCell<bool>>,
+    }
+
+    impl VideoSink for FakeSink {
+        fn open(&mut self, _size: Size) -> Result<()> {
+            *self.opened.borrow_mut() = true;
+            Ok(())
+        }
+
+        fn write(&mut self, _frame: &Mat) -> Result<()> {
+            *self.writes.borrow_mut() += 1;
+            Ok(())
+        }
+    }
+
+    struct FakePreview {
+        keys: VecDeque<i32>,
+    }
+
+    impl Preview for FakePreview {
+        fn show(&mut self, _frame: &Mat) -> Result<()> {
+            Ok(())
+        }
+
+        fn wait_key(&mut self) -> Result<i32> {
+            Ok(self.keys.pop_front().unwrap_or(KEY_CODE_ESC))
+        }
+    }
+
+    fn fake_sink() -> FakeSink {
+        FakeSink {
+            writes: Rc::new(RefCell::new(0)),
+            opened: Rc::new(RefCell::new(false)),
+        }
+    }
+
+    #[test]
+    fn run_core_overlays_writes_and_stops_on_esc() {
+        let writer = Writer::new("out.avi").qr_size(40);
+        let camera = FakeCamera {
+            opened: true,
+            frames: vec![
+                Some(valid_frame()), // first read: used for sizing
+                None,                // empty frame -> continue
+                Some(valid_frame()), // processed
+                Some(valid_frame()), // processed, then Esc
+            ]
+            .into(),
+        };
+        let preview = FakePreview {
+            keys: vec![1, KEY_CODE_ESC].into(), // first non-Esc, then Esc
+        };
+        let sink = fake_sink();
+        let (writes, opened) = (sink.writes.clone(), sink.opened.clone());
+
+        writer
+            .run_core(Box::new(camera), Box::new(sink), Box::new(preview), Record::new)
+            .unwrap();
+
+        assert!(*opened.borrow());
+        assert_eq!(*writes.borrow(), 2);
+    }
+
+    #[test]
+    fn run_core_errors_when_camera_not_opened() {
+        let writer = Writer::new("out.avi");
+        let camera = FakeCamera {
+            opened: false,
+            frames: VecDeque::new(),
+        };
+        let err = writer.run_core(
+            Box::new(camera),
+            Box::new(fake_sink()),
+            Box::new(FakePreview { keys: VecDeque::new() }),
+            Record::new,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn run_core_errors_when_first_read_fails() {
+        let writer = Writer::new("out.avi");
+        let camera = FakeCamera {
+            opened: true,
+            frames: VecDeque::new(), // first read returns false
+        };
+        let err = writer.run_core(
+            Box::new(camera),
+            Box::new(fake_sink()),
+            Box::new(FakePreview { keys: VecDeque::new() }),
+            Record::new,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn builders_set_all_fields() {
+        let writer = Writer::new("out.avi")
+            .camera(2)
+            .codec("XVID")
+            .fps(60)
+            .qr_size(150)
+            .radix(crate::Radix::new(64).unwrap());
+        assert_eq!(writer.camera, 2);
+        assert_eq!(writer.codec_fourcc, "XVID");
+        assert_eq!(writer.fps, 60.0);
+        assert_eq!(writer.qr_size, 150);
+        assert_eq!(writer.senbay.radix().get(), 64);
     }
 }

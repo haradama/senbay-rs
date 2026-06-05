@@ -45,6 +45,8 @@ pub use value::Value;
 #[cfg(feature = "video")]
 mod reader;
 #[cfg(feature = "video")]
+mod video_backend;
+#[cfg(feature = "video")]
 mod writer;
 
 #[cfg(feature = "video")]
