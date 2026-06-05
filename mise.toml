@@ -8,11 +8,12 @@
 #   mise run test-video     # cargo test --features video
 #   mise run coverage-video # C0 line coverage incl. the video feature
 #
-# System prerequisites (NOT managed by mise — install via your OS package manager):
-#   Linux:  sudo apt install libopencv-dev llvm-18 libclang-18-dev clang-18
-#   macOS:  brew install opencv llvm pkg-config
-# These provide the system OpenCV the `opencv` crate links against and the
-# libclang its binding generator parses headers with.
+# System prerequisites (the system OpenCV the `opencv` crate links against and
+# the libclang its binding generator parses headers with):
+#   macOS:  installed automatically by `mise run setup` via Homebrew
+#           (opencv, llvm, pkg-config); Homebrew itself must already be present.
+#   Linux:  install once with apt (needs sudo, so it is not automated):
+#             sudo apt install libopencv-dev llvm-18 libclang-18-dev clang-18
 
 [tools]
 rust = "1.95"
@@ -36,6 +37,17 @@ envfile="$root/.mise/env"
 mkdir -p "$root/.mise"
 
 if [ "$(uname -s)" = "Darwin" ]; then
+  # Install the system prerequisites via Homebrew (no sudo needed). Only the
+  # missing formulae are installed, so re-runs are cheap.
+  if command -v brew >/dev/null 2>&1; then
+    for f in opencv llvm pkg-config; do
+      brew list "$f" >/dev/null 2>&1 || { echo "installing $f via brew..."; brew install "$f"; }
+    done
+  else
+    echo "warning: Homebrew not found. Install it from https://brew.sh, then" >&2
+    echo "         re-run, or install opencv/llvm/pkg-config manually." >&2
+  fi
+
   # macOS: find an LLVM that ships libclang.dylib together with a matching clang.
   # Point at the real lib dir (not a symlink) so the dylib's own @rpath resolves.
   libdir=""; clang=""
