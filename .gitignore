@@ -87,3 +87,5 @@ Cargo.lock
 # End of https://www.toptal.com/developers/gitignore/api/rust,linux,macos,visualstudiocode
 
 *.webm
+# mise-generated libclang shim (see mise.toml)
+/.mise/libclang/

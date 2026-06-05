@@ -1,0 +1,80 @@
+# mise environment for senbay-rs.
+#
+# Quick start:
+#   mise install            # install pinned tools (rust, cargo-llvm-cov)
+#   mise run setup          # toolchain components + libclang shim (for `video`)
+#   mise run test           # cargo test
+#   mise run coverage       # C0 line coverage (default features)
+#   mise run test-video     # cargo test --features video
+#   mise run coverage-video # C0 line coverage incl. the video feature
+#
+# System prerequisites (NOT managed by mise — install via your OS package manager):
+#   - OpenCV dev libs        e.g. `sudo apt install libopencv-dev clang`
+#   - LLVM/Clang 18          e.g. `sudo apt install llvm-18 libclang-18-dev clang-18`
+# These provide the system OpenCV the `opencv` crate links against and the
+# libclang its binding generator parses headers with.
+
+[tools]
+rust = "1.95"
+"cargo:cargo-llvm-cov" = "0.8.7"
+
+[env]
+# --- `video` feature build (OpenCV bindings) ---------------------------------
+# The opencv binding generator parses C++ headers with libclang. Two things have
+# to line up or the build fails with bogus "no member named int16_t" errors:
+#
+#   1. CLANG_PATH must point at a clang *binary* whose version matches libclang,
+#      so the matching builtin headers (its resource dir) are used. If an
+#      unrelated clang (e.g. a custom LLVM toolchain) is first on PATH, the
+#      generator otherwise mixes its headers with libclang and breaks.
+#   2. LIBCLANG_PATH must contain a file literally named `libclang.so`. Distro
+#      packages often ship only `libclang-18.so.1`, so `mise run setup` creates a
+#      `libclang.so` symlink under .mise/libclang and we point at it here.
+CLANG_PATH = "/usr/bin/clang-18"
+LIBCLANG_PATH = "{{config_root}}/.mise/libclang"
+
+[tasks.setup]
+description = "Install the llvm-tools component and build the libclang shim"
+run = """
+set -eu
+rustup component add llvm-tools-preview >/dev/null 2>&1 || true
+
+dest="$MISE_PROJECT_ROOT/.mise/libclang"
+mkdir -p "$dest"
+
+# Locate a libclang shared object. Layouts vary: some distros ship a plain
+# `libclang.so` dev symlink, others only the versioned `libclang-18.so.1`.
+libdir=$(llvm-config-18 --libdir 2>/dev/null || echo /usr/lib/llvm-18/lib)
+src=""
+for cand in "$libdir/libclang.so" "$libdir"/libclang-18.so.* "$libdir"/libclang.so.*; do
+  [ -e "$cand" ] && src="$cand" && break
+done
+if [ -z "$src" ]; then
+  src=$(find /usr/lib /usr/lib64 -name 'libclang*.so*' 2>/dev/null | grep -v cpp | sort -V | tail -1)
+fi
+if [ -z "${src:-}" ]; then
+  echo "error: libclang not found." >&2
+  echo "       install it, e.g.: sudo apt install llvm-18 libclang-18-dev clang-18" >&2
+  exit 1
+fi
+ln -sfn "$src" "$dest/libclang.so"
+echo "libclang shim ready: $dest/libclang.so -> $src"
+"""
+
+[tasks.test]
+description = "Run the test suite (default features)"
+run = "cargo test"
+
+[tasks.test-video]
+description = "Run the test suite with the video feature"
+depends = ["setup"]
+run = "cargo test --features video"
+
+[tasks.coverage]
+description = "C0 line coverage (default features)"
+run = "cargo llvm-cov"
+
+[tasks.coverage-video]
+description = "C0 line coverage including the video feature (OpenCV backend excluded)"
+depends = ["setup"]
+run = "cargo llvm-cov --features video --ignore-filename-regex 'video_backend\\.rs'"

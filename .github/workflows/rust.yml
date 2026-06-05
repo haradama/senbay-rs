@@ -10,13 +10,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+
+      # System libraries the `opencv` crate links against and the libclang its
+      # binding generator parses headers with (not managed by mise).
+      - name: Install OpenCV and LLVM/Clang 18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libopencv-dev clang-18 libclang-18-dev llvm-18
+
+      # Lets mise install cargo-llvm-cov from a prebuilt binary instead of
+      # compiling it from source.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Installs the tools pinned in mise.toml (rust, cargo-llvm-cov) and
+      # applies its [env] (CLANG_PATH, LIBCLANG_PATH) to later `mise run` steps.
+      - name: Set up mise
+        uses: jdx/mise-action@v2
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Project setup (llvm-tools + libclang shim)
+        run: mise run setup
+
+      - name: Build and test (video feature)
+        run: mise run test-video
+
+      - name: Coverage — default features (require 100% C0 lines)
+        run: mise run coverage -- --fail-under-lines 100
+
+      - name: Coverage — video feature (require 100% C0 lines)
+        run: mise run coverage-video -- --fail-under-lines 100
