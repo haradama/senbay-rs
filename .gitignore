@@ -88,4 +88,5 @@ Cargo.lock
 
 *.webm
 # mise-generated libclang shim (see mise.toml)
+/.mise/env
 /.mise/libclang/

@@ -2,15 +2,15 @@
 #
 # Quick start:
 #   mise install            # install pinned tools (rust, cargo-llvm-cov)
-#   mise run setup          # toolchain components + libclang shim (for `video`)
+#   mise run setup          # toolchain components + detect libclang (for `video`)
 #   mise run test           # cargo test
 #   mise run coverage       # C0 line coverage (default features)
 #   mise run test-video     # cargo test --features video
 #   mise run coverage-video # C0 line coverage incl. the video feature
 #
 # System prerequisites (NOT managed by mise — install via your OS package manager):
-#   - OpenCV dev libs        e.g. `sudo apt install libopencv-dev clang`
-#   - LLVM/Clang 18          e.g. `sudo apt install llvm-18 libclang-18-dev clang-18`
+#   Linux:  sudo apt install libopencv-dev llvm-18 libclang-18-dev clang-18
+#   macOS:  brew install opencv llvm pkg-config
 # These provide the system OpenCV the `opencv` crate links against and the
 # libclang its binding generator parses headers with.
 
@@ -19,46 +19,73 @@ rust = "1.95"
 "cargo:cargo-llvm-cov" = "0.8.7"
 
 [env]
-# --- `video` feature build (OpenCV bindings) ---------------------------------
-# The opencv binding generator parses C++ headers with libclang. Two things have
-# to line up or the build fails with bogus "no member named int16_t" errors:
-#
-#   1. CLANG_PATH must point at a clang *binary* whose version matches libclang,
-#      so the matching builtin headers (its resource dir) are used. If an
-#      unrelated clang (e.g. a custom LLVM toolchain) is first on PATH, the
-#      generator otherwise mixes its headers with libclang and breaks.
-#   2. LIBCLANG_PATH must contain a file literally named `libclang.so`. Distro
-#      packages often ship only `libclang-18.so.1`, so `mise run setup` creates a
-#      `libclang.so` symlink under .mise/libclang and we point at it here.
-CLANG_PATH = "/usr/bin/clang-18"
-LIBCLANG_PATH = "{{config_root}}/.mise/libclang"
+# The `video` feature builds OpenCV bindings, which need libclang plus a clang
+# whose version matches it. The right paths differ per OS and per install, so
+# `mise run setup` detects them and writes .mise/env, which is loaded here. The
+# file is absent until `setup` runs, which mise tolerates.
+_.file = "{{config_root}}/.mise/env"
 
 [tasks.setup]
-description = "Install the llvm-tools component and build the libclang shim"
+description = "Install the llvm-tools component and detect libclang for the video feature"
 run = """
 set -eu
 rustup component add llvm-tools-preview >/dev/null 2>&1 || true
 
-dest="$MISE_PROJECT_ROOT/.mise/libclang"
-mkdir -p "$dest"
+root="$MISE_PROJECT_ROOT"
+envfile="$root/.mise/env"
+mkdir -p "$root/.mise"
 
-# Locate a libclang shared object. Layouts vary: some distros ship a plain
-# `libclang.so` dev symlink, others only the versioned `libclang-18.so.1`.
-libdir=$(llvm-config-18 --libdir 2>/dev/null || echo /usr/lib/llvm-18/lib)
-src=""
-for cand in "$libdir/libclang.so" "$libdir"/libclang-18.so.* "$libdir"/libclang.so.*; do
-  [ -e "$cand" ] && src="$cand" && break
-done
-if [ -z "$src" ]; then
-  src=$(find /usr/lib /usr/lib64 -name 'libclang*.so*' 2>/dev/null | grep -v cpp | sort -V | tail -1)
+if [ "$(uname -s)" = "Darwin" ]; then
+  # macOS: find an LLVM that ships libclang.dylib together with a matching clang.
+  # Point at the real lib dir (not a symlink) so the dylib's own @rpath resolves.
+  libdir=""; clang=""
+  for prefix in \
+      "$(brew --prefix llvm 2>/dev/null || true)" \
+      "$(brew --prefix 2>/dev/null || true)/opt/llvm" \
+      "$(xcode-select -p 2>/dev/null || true)/Toolchains/XcodeDefault.xctoolchain/usr" \
+      "/Library/Developer/CommandLineTools/usr"; do
+    [ -n "$prefix" ] || continue
+    if [ -e "$prefix/lib/libclang.dylib" ]; then
+      libdir="$prefix/lib"
+      [ -x "$prefix/bin/clang" ] && clang="$prefix/bin/clang"
+      break
+    fi
+  done
+  [ -n "$clang" ] || clang="$(xcrun -f clang 2>/dev/null || command -v clang || true)"
+  if [ -z "$libdir" ]; then
+    echo "error: libclang.dylib not found. Install LLVM, e.g.: brew install llvm" >&2
+    exit 1
+  fi
+  {
+    echo "LIBCLANG_PATH=$libdir"
+    echo "DYLD_FALLBACK_LIBRARY_PATH=$libdir"
+    [ -n "$clang" ] && echo "CLANG_PATH=$clang"
+  } > "$envfile"
+  echo "macOS: libclang at $libdir${clang:+, clang at $clang}"
+else
+  # Linux: clang-sys wants a file literally named libclang.so, but distros often
+  # ship only libclang-18.so.1, so shim a correctly-named symlink into .mise.
+  dest="$root/.mise/libclang"
+  mkdir -p "$dest"
+  libdir="$(llvm-config-18 --libdir 2>/dev/null || echo /usr/lib/llvm-18/lib)"
+  src=""
+  for cand in "$libdir/libclang.so" "$libdir"/libclang-18.so.* "$libdir"/libclang.so.*; do
+    [ -e "$cand" ] && src="$cand" && break
+  done
+  [ -n "$src" ] || src="$(find /usr/lib /usr/lib64 -name 'libclang*.so*' 2>/dev/null | grep -v cpp | sort -V | tail -1)"
+  if [ -z "$src" ]; then
+    echo "error: libclang not found. Install, e.g.: sudo apt install llvm-18 libclang-18-dev clang-18" >&2
+    exit 1
+  fi
+  ln -sfn "$src" "$dest/libclang.so"
+  clang="$(command -v clang-18 || echo /usr/bin/clang-18)"
+  {
+    echo "LIBCLANG_PATH=$dest"
+    echo "CLANG_PATH=$clang"
+  } > "$envfile"
+  echo "Linux: libclang shim $dest/libclang.so -> $src"
 fi
-if [ -z "${src:-}" ]; then
-  echo "error: libclang not found." >&2
-  echo "       install it, e.g.: sudo apt install llvm-18 libclang-18-dev clang-18" >&2
-  exit 1
-fi
-ln -sfn "$src" "$dest/libclang.so"
-echo "libclang shim ready: $dest/libclang.so -> $src"
+echo "wrote $envfile"
 """
 
 [tasks.test]
@@ -68,7 +95,7 @@ run = "cargo test"
 [tasks.test-video]
 description = "Run the test suite with the video feature"
 depends = ["setup"]
-run = "cargo test --features video"
+run = 'set -a; [ -f "$MISE_PROJECT_ROOT/.mise/env" ] && . "$MISE_PROJECT_ROOT/.mise/env"; set +a; cargo test --features video'
 
 [tasks.coverage]
 description = "C0 line coverage (default features)"
@@ -77,4 +104,4 @@ run = "cargo llvm-cov"
 [tasks.coverage-video]
 description = "C0 line coverage including the video feature (OpenCV backend excluded)"
 depends = ["setup"]
-run = "cargo llvm-cov --features video --ignore-filename-regex 'video_backend\\.rs'"
+run = 'set -a; [ -f "$MISE_PROJECT_ROOT/.mise/env" ] && . "$MISE_PROJECT_ROOT/.mise/env"; set +a; cargo llvm-cov --features video --ignore-filename-regex "video_backend\.rs"'
