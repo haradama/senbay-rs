@@ -70,24 +70,41 @@ impl VideoSink for CaptureSink {
     }
 }
 
-/// Preview window backed by OpenCV highgui.
-struct Window(&'static str);
+/// Preview window backed by OpenCV highgui. `delay_ms` is how long each frame
+/// is shown (the `wait_key` timeout), which paces playback to the source's
+/// frame rate instead of running as fast as frames can be decoded.
+struct Window {
+    name: &'static str,
+    delay_ms: i32,
+}
 
 impl Window {
-    fn new(name: &'static str) -> Result<Self> {
+    fn new(name: &'static str, delay_ms: i32) -> Result<Self> {
         highgui::named_window(name, highgui::WINDOW_AUTOSIZE)?;
-        Ok(Window(name))
+        // wait_key(0) blocks until a key is pressed, so never let the pace hit 0.
+        Ok(Window { name, delay_ms: delay_ms.max(1) })
     }
 }
 
 impl Preview for Window {
     fn show(&mut self, frame: &Mat) -> Result<()> {
-        highgui::imshow(self.0, frame)?;
+        highgui::imshow(self.name, frame)?;
         Ok(())
     }
 
     fn wait_key(&mut self) -> Result<i32> {
-        Ok(highgui::wait_key(1)?)
+        Ok(highgui::wait_key(self.delay_ms)?)
+    }
+}
+
+/// Frame interval in milliseconds for a capture, from its `CAP_PROP_FPS`.
+/// Falls back to ~30 fps when the container reports no usable frame rate.
+fn frame_delay_ms(capture: &videoio::VideoCapture) -> i32 {
+    let fps = capture.get(videoio::CAP_PROP_FPS).unwrap_or(0.0);
+    if fps.is_finite() && fps > 1.0 {
+        (1000.0 / fps).round() as i32
+    } else {
+        33
     }
 }
 
@@ -110,12 +127,14 @@ impl Reader {
     /// prefer [`records`](Reader::records).
     pub fn for_each(&self, mut callback: impl FnMut(Record)) -> Result<()> {
         let capture = videoio::VideoCapture::from_file(&self.source, videoio::CAP_ANY)?;
-        let source: Box<dyn FrameReader> = Box::new(CaptureReader(capture));
+        // Pace the window to the video's frame rate (read before moving the
+        // capture into the reader) so playback runs in real time.
         let preview: Option<Box<dyn Preview>> = if self.headless {
             None
         } else {
-            Some(Box::new(Window::new("Senbay Reader")?))
+            Some(Box::new(Window::new("Senbay Reader", frame_delay_ms(&capture))?))
         };
+        let source: Box<dyn FrameReader> = Box::new(CaptureReader(capture));
         self.run_loop(source, preview, &mut callback)
     }
 }
@@ -124,7 +143,8 @@ impl Writer {
     /// Captures frames until <kbd>Esc</kbd>, embedding the record produced by
     /// `next_record` into each one.
     pub fn run(&self, next_record: impl FnMut() -> Record) -> Result<()> {
-        let window = Window::new("Senbay Writer")?;
+        // The camera supplies frames at its own rate, so don't add extra delay.
+        let window = Window::new("Senbay Writer", 1)?;
         let camera = videoio::VideoCapture::new(self.camera, videoio::CAP_ANY)?;
         let sink = CaptureSink {
             output: self.output.clone(),
