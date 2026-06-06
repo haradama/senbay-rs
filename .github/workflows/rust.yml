@@ -11,14 +11,20 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # System libraries the `opencv` crate links against and the libclang its
-      # binding generator parses headers with (not managed by mise).
-      - name: Install OpenCV and LLVM/Clang 18
+      # Linux: the system OpenCV the `opencv` crate links against and the
+      # libclang its binding generator needs. On macOS these are installed by
+      # `mise run setup` via Homebrew instead.
+      - name: Install OpenCV and LLVM/Clang 18 (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -29,25 +35,29 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
-      # Installs the tools pinned in mise.toml (rust, cargo-llvm-cov) and
-      # applies its [env] (CLANG_PATH, LIBCLANG_PATH) to later `mise run` steps.
+      # Installs the tools pinned in mise.toml (rust, cargo-llvm-cov).
       - name: Set up mise
         uses: jdx/mise-action@v2
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Project setup (llvm-tools + libclang shim)
+      # llvm-tools + wires libclang into .cargo/config.toml. On macOS it also
+      # `brew install`s opencv/llvm/pkg-config.
+      - name: Project setup (toolchain + libclang)
         run: mise run setup
 
+      # The real build/test verification on each OS.
       - name: Build and test (video feature)
         run: mise run test-video
 
-      # One run covers everything: `--all-features` turns on `video`, and the
-      # OpenCV hardware/GUI shim (video_backend.rs) is excluded since it can't
-      # run under unit tests. `--fail-under-lines 100` gates the build but still
-      # writes the JSON, so the summary below renders even on a regression.
+      # Coverage is platform-independent, so measure, gate, and summarize once
+      # on Linux. `--all-features` turns on `video`; the OpenCV hardware/GUI shim
+      # (video_backend.rs) is excluded since it can't run under unit tests.
+      # `--fail-under-lines 100` gates but still writes the JSON, so the summary
+      # below renders even on a regression.
       - name: Generate coverage JSON
+        if: runner.os == 'Linux'
         run: |
           cargo llvm-cov \
             --workspace \
@@ -59,7 +69,7 @@ jobs:
             --output-path coverage.json
 
       - name: Add coverage table to job summary
-        if: always()
+        if: ${{ always() && runner.os == 'Linux' }}
         run: |
           if [ ! -f coverage.json ]; then
             echo "_No coverage report was produced._" >> "$GITHUB_STEP_SUMMARY"
