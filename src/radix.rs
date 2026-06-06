@@ -152,11 +152,23 @@ impl Radix {
             Some((int_str, frac_str)) => {
                 let int_val = self.decode_int(int_str);
 
-                // Strip the leading zero digits the encoder inserted.
+                // The encoder emits one zero digit per zero *anywhere* in the
+                // fraction, not just leading ones. So the count of leading zero
+                // digits on the wire is (true leading zeros) + (zeros already
+                // carried inside frac_val). Subtract the latter to recover the
+                // true leading-zero count, otherwise fractions with inner zeros
+                // would be shifted (e.g. `.690578` decoding as `.0690578`).
                 let zero_digit = self.encode_int(0).chars().next().unwrap_or('\0');
-                let leading = frac_str.chars().take_while(|&c| c == zero_digit).count();
-                let frac_rest: String = frac_str.chars().skip(leading).collect();
+                let wire_zeros = frac_str.chars().take_while(|&c| c == zero_digit).count();
+                let frac_rest: String = frac_str.chars().skip(wire_zeros).collect();
                 let frac_val = self.decode_int(&frac_rest);
+
+                let inner_zeros = if frac_val == 0 {
+                    0
+                } else {
+                    frac_val.unsigned_abs().to_string().bytes().filter(|&b| b == b'0').count()
+                };
+                let leading = wire_zeros.saturating_sub(inner_zeros);
 
                 let text = format!("{int_val}.{}{frac_val}", "0".repeat(leading));
                 text.parse::<f64>().unwrap_or(0.0)
@@ -212,6 +224,24 @@ mod tests {
             let decoded = radix.decode_float(&radix.encode_float(v));
             assert!((decoded - v).abs() < 1e-9, "value {v} -> {decoded}");
         }
+    }
+
+    #[test]
+    fn floats_with_inner_zeros_round_trip() {
+        let radix = Radix::DEFAULT;
+        // Fractions whose digits include non-leading zeros must not be shifted.
+        for v in [35.690578_f64, 0.105, 1.0205, 100.0001, 2.05, 139.7251506] {
+            let decoded = radix.decode_float(&radix.encode_float(v));
+            assert!((decoded - v).abs() < 1e-9, "value {v} -> {decoded}");
+        }
+    }
+
+    #[test]
+    fn decode_float_all_zero_fraction() {
+        let radix = Radix::DEFAULT;
+        // A fraction made entirely of zero digits decodes to the integer part.
+        let s = format!("{}.\0\0", radix.encode_int(35));
+        assert_eq!(radix.decode_float(&s), 35.0);
     }
 
     #[test]

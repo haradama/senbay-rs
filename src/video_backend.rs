@@ -97,6 +97,16 @@ impl Preview for Window {
     }
 }
 
+/// Opens a video file, returning a clear error if it could not be opened
+/// (a missing path or unsupported codec otherwise yields a silent empty stream).
+fn open_file(source: &str) -> Result<videoio::VideoCapture> {
+    let capture = videoio::VideoCapture::from_file(source, videoio::CAP_ANY)?;
+    if !capture.is_opened()? {
+        return Err(opencv::Error::new(0, format!("cannot open video file: {source}")).into());
+    }
+    Ok(capture)
+}
+
 /// Frame interval in milliseconds for a capture, from its `CAP_PROP_FPS`.
 /// Falls back to ~30 fps when the container reports no usable frame rate.
 fn frame_delay_ms(capture: &videoio::VideoCapture) -> i32 {
@@ -116,7 +126,7 @@ impl Reader {
     /// the iterator yields one record per successful decode (deduplicate
     /// downstream if desired).
     pub fn records(&self) -> Result<RecordIter> {
-        let capture = videoio::VideoCapture::from_file(&self.source, videoio::CAP_ANY)?;
+        let capture = open_file(&self.source)?;
         Ok(self.record_iter(Box::new(CaptureReader(capture))))
     }
 
@@ -126,7 +136,7 @@ impl Reader {
     /// and <kbd>Esc</kbd> stops playback. For headless, early-terminable use,
     /// prefer [`records`](Reader::records).
     pub fn for_each(&self, mut callback: impl FnMut(Record)) -> Result<()> {
-        let capture = videoio::VideoCapture::from_file(&self.source, videoio::CAP_ANY)?;
+        let capture = open_file(&self.source)?;
         // Pace the window to the video's frame rate (read before moving the
         // capture into the reader) so playback runs in real time.
         let preview: Option<Box<dyn Preview>> = if self.headless {

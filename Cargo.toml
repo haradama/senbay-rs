@@ -1,6 +1,6 @@
 [package]
 name = "senbay-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Encode and decode the Senbay format."
 license = "Apache-2.0"
@@ -28,4 +28,3 @@ video = ["dep:opencv", "dep:qrcode", "dep:quircs"]
 [[example]]
 name = "read_webm"
 required-features = ["video"]
-
