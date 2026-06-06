@@ -90,3 +90,6 @@ Cargo.lock
 # mise-generated libclang shim (see mise.toml)
 /.cargo/config.toml
 /.mise/libclang/
+
+# cargo-llvm-cov JSON reports for the CI job summary
+/coverage*.json

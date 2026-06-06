@@ -43,8 +43,47 @@ jobs:
       - name: Build and test (video feature)
         run: mise run test-video
 
-      - name: Coverage — default features (require 100% C0 lines)
-        run: mise run coverage -- --fail-under-lines 100
+      # One run covers everything: `--all-features` turns on `video`, and the
+      # OpenCV hardware/GUI shim (video_backend.rs) is excluded since it can't
+      # run under unit tests. `--fail-under-lines 100` gates the build but still
+      # writes the JSON, so the summary below renders even on a regression.
+      - name: Generate coverage JSON
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --all-features \
+            --ignore-filename-regex 'video_backend\.rs' \
+            --json \
+            --summary-only \
+            --fail-under-lines 100 \
+            --output-path coverage.json
 
-      - name: Coverage — video feature (require 100% C0 lines)
-        run: mise run coverage-video -- --fail-under-lines 100
+      - name: Add coverage table to job summary
+        if: always()
+        run: |
+          if [ ! -f coverage.json ]; then
+            echo "_No coverage report was produced._" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          lines_percent=$(jq -r '.data[0].totals.lines.percent' coverage.json)
+          lines_covered=$(jq -r '.data[0].totals.lines.covered' coverage.json)
+          lines_count=$(jq -r '.data[0].totals.lines.count' coverage.json)
+
+          functions_percent=$(jq -r '.data[0].totals.functions.percent' coverage.json)
+          functions_covered=$(jq -r '.data[0].totals.functions.covered' coverage.json)
+          functions_count=$(jq -r '.data[0].totals.functions.count' coverage.json)
+
+          regions_percent=$(jq -r '.data[0].totals.regions.percent' coverage.json)
+          regions_covered=$(jq -r '.data[0].totals.regions.covered' coverage.json)
+          regions_count=$(jq -r '.data[0].totals.regions.count' coverage.json)
+
+          {
+            echo "## Coverage"
+            echo ""
+            echo "| Metric | Covered | Total | Coverage |"
+            echo "|---|---:|---:|---:|"
+            echo "| Lines | ${lines_covered} | ${lines_count} | $(printf '%.2f' "$lines_percent")% |"
+            echo "| Functions | ${functions_covered} | ${functions_count} | $(printf '%.2f' "$functions_percent")% |"
+            echo "| Regions | ${regions_covered} | ${regions_count} | $(printf '%.2f' "$regions_percent")% |"
+          } >> "$GITHUB_STEP_SUMMARY"
