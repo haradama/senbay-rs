@@ -52,6 +52,7 @@ pub struct Reader {
     pub(crate) source: String,
     pub(crate) headless: bool,
     pub(crate) step: usize,
+    pub(crate) playback_speed: f64,
     pub(crate) codec: Senbay,
 }
 
@@ -62,6 +63,7 @@ impl Reader {
             source: source.into(),
             headless: false,
             step: 1,
+            playback_speed: 1.0,
             codec: Senbay::new(),
         }
     }
@@ -79,6 +81,18 @@ impl Reader {
     /// Skipped frames are advanced cheaply without being decoded.
     pub fn frame_step(mut self, step: usize) -> Self {
         self.step = step.max(1);
+        self
+    }
+
+    /// Sets the preview playback speed multiplier (default `1.0` = real time).
+    ///
+    /// Only affects the [`for_each`](Reader::for_each) preview window: `2.0`
+    /// plays twice as fast, `0.5` half speed. Non-positive values are ignored.
+    /// Headless decoding always runs as fast as possible.
+    pub fn playback_speed(mut self, factor: f64) -> Self {
+        if factor > 0.0 {
+            self.playback_speed = factor;
+        }
         self
     }
 
@@ -400,16 +414,25 @@ mod tests {
         let reader = Reader::from_file("input.mp4")
             .headless(true)
             .frame_step(3)
+            .playback_speed(2.0)
             .radix(crate::Radix::new(64).unwrap());
         assert_eq!(reader.source, "input.mp4");
         assert!(reader.headless);
         assert_eq!(reader.step, 3);
+        assert_eq!(reader.playback_speed, 2.0);
         assert_eq!(reader.codec.radix().get(), 64);
     }
 
     #[test]
     fn frame_step_is_clamped_to_one() {
         assert_eq!(Reader::from_file("x").frame_step(0).step, 1);
+    }
+
+    #[test]
+    fn playback_speed_ignores_non_positive() {
+        // A non-positive multiplier keeps the default real-time speed.
+        assert_eq!(Reader::from_file("x").playback_speed(0.0).playback_speed, 1.0);
+        assert_eq!(Reader::from_file("x").playback_speed(3.0).playback_speed, 3.0);
     }
 
     #[test]

@@ -107,15 +107,13 @@ fn open_file(source: &str) -> Result<videoio::VideoCapture> {
     Ok(capture)
 }
 
-/// Frame interval in milliseconds for a capture, from its `CAP_PROP_FPS`.
-/// Falls back to ~30 fps when the container reports no usable frame rate.
-fn frame_delay_ms(capture: &videoio::VideoCapture) -> i32 {
+/// Per-frame preview delay in milliseconds: the capture's frame interval (from
+/// `CAP_PROP_FPS`, falling back to ~30 fps) divided by the playback `speed`.
+fn frame_delay_ms(capture: &videoio::VideoCapture, speed: f64) -> i32 {
     let fps = capture.get(videoio::CAP_PROP_FPS).unwrap_or(0.0);
-    if fps.is_finite() && fps > 1.0 {
-        (1000.0 / fps).round() as i32
-    } else {
-        33
-    }
+    let interval = if fps.is_finite() && fps > 1.0 { 1000.0 / fps } else { 33.0 };
+    let speed = if speed > 0.0 { speed } else { 1.0 };
+    (interval / speed).round().max(1.0) as i32
 }
 
 impl Reader {
@@ -142,7 +140,8 @@ impl Reader {
         let preview: Option<Box<dyn Preview>> = if self.headless {
             None
         } else {
-            Some(Box::new(Window::new("Senbay Reader", frame_delay_ms(&capture))?))
+            let delay = frame_delay_ms(&capture, self.playback_speed);
+            Some(Box::new(Window::new("Senbay Reader", delay)?))
         };
         let source: Box<dyn FrameReader> = Box::new(CaptureReader(capture));
         self.run_loop(source, preview, &mut callback)
